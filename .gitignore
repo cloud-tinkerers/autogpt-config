@@ -1,0 +1,7 @@
+.env
+id_rsa
+autogpt.env
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.*
