@@ -27,8 +27,20 @@ variable "openai_api_key" {
   sensitive   = true
 }
 
-# variable "dns_zone_name" {
-#   type        = string
-#   description = "(Required) The DNS zone name."
-#   default     = "mrb-autogpt.com"
-# }
+variable "vmss_capacity" {
+  type        = number
+  description = "The initial capacity of the VM Scale Set"
+  default     = 2
+}
+
+variable "vmss_min_capacity" {
+  type        = number
+  description = "The minimum capacity of the VM Scale Set"
+  default     = 1
+}
+
+variable "vmss_max_capacity" {
+  type        = number
+  description = "The maximum capacity of the VM Scale Set"
+  default     = 5
+}

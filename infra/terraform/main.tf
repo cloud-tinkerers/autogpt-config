@@ -26,59 +26,60 @@ resource "tls_private_key" "ssh" {
   rsa_bits  = 4096
 }
 
-resource "azurerm_linux_virtual_machine" "vm" {
-  name                  = "${var.prefix}-vm-${local.random_id}"
-  location              = azurerm_resource_group.rg.location
-  resource_group_name   = azurerm_resource_group.rg.name
-  network_interface_ids = [azurerm_network_interface.nic.id]
-  size                  = "Standard_DS1_v2"
-  source_image_id       = "/subscriptions/${var.subscription_id}/resourceGroups/${azurerm_resource_group.rg.name}/providers/Microsoft.Compute/images/autogpt-vm-image"
+resource "azurerm_linux_virtual_machine_scale_set" "vmss" {
+  name                = "${var.prefix}-vmss-${local.random_id}"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  upgrade_policy_mode = "Manual"
+  sku {
+    name     = "Standard_DS1_v2"
+    tier     = "Standard"
+    capacity = var.vmss_capacity
+  }
 
+  os_profile {
+    computer_name_prefix = "${var.prefix}-vmss"
+    admin_username       = "azureuser"
+    custom_data          = filebase64("${path.module}/cloud-init.txt")
+  }
 
-  os_disk {
-    name                 = "${var.prefix}-vm-disk-${local.random_id}"
+  os_profile_linux_config {
+    disable_password_authentication = true
+    ssh_keys {
+      path     = "/home/azureuser/.ssh/authorized_keys"
+      key_data = tls_private_key.ssh.public_key_openssh
+    }
+  }
+
+  storage_profile_image_reference {
+    id = "/subscriptions/${var.subscription_id}/resourceGroups/${azurerm_resource_group.rg.name}/providers/Microsoft.Compute/images/autogpt-vm-image"
+  }
+
+  storage_profile_os_disk {
     caching              = "ReadWrite"
-    storage_account_type = "Premium_LRS"
+    managed_disk_type    = "Premium_LRS"
+    disk_size_gb         = 30
   }
 
-  computer_name                   = "${var.prefix}-pc"
-  admin_username                  = "azureuser"
-  disable_password_authentication = true
-
-  admin_ssh_key {
-    username   = "azureuser"
-    public_key = tls_private_key.ssh.public_key_openssh
+  network_profile {
+    name    = "${var.prefix}-vmss-nic"
+    primary = true
+    ip_configuration {
+      name                                   = "${var.prefix}-vmss-ipconfig"
+      subnet_id                              = azurerm_subnet.snet.id
+      primary                                = true
+      public_ip_address_configuration {
+        name = "${var.prefix}-vmss-pip"
+      }
+    }
   }
 
-  boot_diagnostics {
-    storage_account_uri = azurerm_storage_account.my_storage_account.primary_blob_endpoint
+  automatic_instance_repair {
+    enabled      = true
+    grace_period = "PT30M"
   }
 
-  connection {
-    type        = "ssh"
-    host        = self.public_ip_address
-    user        = self.admin_username
-    private_key = tls_private_key.ssh.private_key_pem
-    timeout     = "2m"
-  }
-
-  provisioner "file" {
-    source = "${path.module}/autogpt.env"
-    destination = "/tmp/autogpt.env"
-  }
-
-  provisioner "remote-exec" {
-    inline = [
-      "echo 'Contents of /tmp:'",
-      "ls -la /tmp",
-      "echo 'Contents of ${local.user_path}/Auto-GPT:'",
-      "ls -la ${local.user_path}/Auto-GPT",
-      "sudo mkdir -p ${local.user_path}/Auto-GPT",
-      "sudo mv /tmp/autogpt.env ${local.user_path}/Auto-GPT/.env",
-      "echo 'Contents of ${local.user_path}/Auto-GPT after moving file:'",
-      "ls -la ${local.user_path}/Auto-GPT",
-    ]
-  }
+  health_probe_id = azurerm_lb_probe.lb_probe.id
 
   depends_on = [
     null_resource.packer
@@ -88,6 +89,62 @@ resource "azurerm_linux_virtual_machine" "vm" {
     replace_triggered_by = [
       null_resource.packer
     ]
+  }
+}
+
+resource "azurerm_monitor_autoscale_setting" "autoscale" {
+  name                = "${var.prefix}-autoscale"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  target_resource_id  = azurerm_linux_virtual_machine_scale_set.vmss.id
+
+  profile {
+    name = "defaultProfile"
+    capacity {
+      default = var.vmss_capacity
+      minimum = var.vmss_min_capacity
+      maximum = var.vmss_max_capacity
+    }
+
+    rule {
+      metric_trigger {
+        metric_name        = "Percentage CPU"
+        metric_resource_id = azurerm_linux_virtual_machine_scale_set.vmss.id
+        time_grain         = "PT1M"
+        statistic          = "Average"
+        time_window        = "PT5M"
+        time_aggregation   = "Average"
+        operator           = "GreaterThan"
+        threshold          = 75
+      }
+
+      scale_action {
+        direction = "Increase"
+        type      = "ChangeCount"
+        value     = "1"
+        cooldown  = "PT1M"
+      }
+    }
+
+    rule {
+      metric_trigger {
+        metric_name        = "Percentage CPU"
+        metric_resource_id = azurerm_linux_virtual_machine_scale_set.vmss.id
+        time_grain         = "PT1M"
+        statistic          = "Average"
+        time_window        = "PT5M"
+        time_aggregation   = "Average"
+        operator           = "LessThan"
+        threshold          = 25
+      }
+
+      scale_action {
+        direction = "Decrease"
+        type      = "ChangeCount"
+        value     = "1"
+        cooldown  = "PT1M"
+      }
+    }
   }
 }
 
